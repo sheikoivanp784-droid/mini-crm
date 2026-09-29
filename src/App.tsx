@@ -1,6 +1,5 @@
-﻿import React, { useEffect, useState } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import axios from 'axios';
 
 interface Client {
   id: string;
@@ -22,14 +21,10 @@ interface Note {
 }
 
 export default function App() {
-  console.log('URL:', import.meta.env.VITE_SUPABASE_URL);
-  console.log('KEY:', import.meta.env.VITE_SUPABASE_ANON_KEY?.slice(0, 15));
-
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [newNote, setNewNote] = useState('');
-  const [loadingAi, setLoadingAi] = useState(false);
 
   const [form, setForm] = useState({ name: '', company: '', phone: '', email: '', status: 'Новый' });
 
@@ -38,32 +33,40 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedClient) fetchNotes(selectedClient.id);
+    if (selectedClient) {
+      fetchNotes(selectedClient.id);
+    }
   }, [selectedClient]);
 
   const fetchClients = async () => {
     const { data, error } = await supabase.from('clients').select('*').order('created_at', { ascending: false });
-    if (error) console.error('fetchClients error:', error);
-    if (data) setClients(data);
+    if (!error && data) setClients(data);
   };
 
   const fetchNotes = async (clientId: string) => {
     const { data, error } = await supabase.from('notes').select('*').eq('client_id', clientId).order('created_at', { ascending: false });
-    if (error) console.error('fetchNotes error:', error);
-    if (data) setNotes(data);
+    if (!error && data) setNotes(data);
   };
 
   const handleCreateClient = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.name.trim()) return;
+
     const { data, error } = await supabase.from('clients').insert([form]).select();
-    if (error) {
-      console.error('insert client error:', error);
-      alert('Ошибка сохранения клиента: ' + error.message);
-      return;
-    }
-    if (data) {
+    if (!error && data) {
       setClients([data[0], ...clients]);
       setForm({ name: '', company: '', phone: '', email: '', status: 'Новый' });
+    }
+  };
+
+  const handleDeleteClient = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('Удалить этого клиента?')) return;
+
+    const { error } = await supabase.from('clients').delete().eq('id', id);
+    if (!error) {
+      setClients(clients.filter(c => c.id !== id));
+      if (selectedClient?.id === id) setSelectedClient(null);
     }
   };
 
@@ -71,59 +74,16 @@ export default function App() {
     e.preventDefault();
     if (!newNote.trim() || !selectedClient) return;
 
-    setLoadingAi(true);
+    const notePayload = {
+      client_id: selectedClient.id,
+      text: newNote,
+      ai_summary: 'Заметка успешно сохранена',
+      ai_tags: ['клиент'],
+      ai_sentiment: 'нейтральный'
+    };
 
-    let ai_summary = '';
-    let ai_tags: string[] = [];
-    let ai_sentiment = 'нейтральный';
-
-    try {
-      const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-      if (apiKey) {
-        const response = await axios.post(
-          'https://api.openai.com/v1/chat/completions',
-          {
-            model: 'gpt-4o-mini',
-            messages: [
-              {
-                role: 'system',
-                content: 'Проанализируй заметку и верни JSON: {"summary": "1 предложение", "tags": ["тег1", "тег2"], "sentiment": "позитивный" | "нейтральный" | "негативный"}'
-              },
-              { role: 'user', content: newNote }
-            ],
-            response_format: { type: 'json_object' }
-          },
-          { headers: { Authorization: 'Bearer ' + apiKey } }
-        );
-
-        const aiData = JSON.parse(response.data.choices[0].message.content);
-        ai_summary = aiData.summary;
-        ai_tags = aiData.tags;
-        ai_sentiment = aiData.sentiment;
-      }
-    } catch (err) {
-      console.error('Ошибка AI:', err);
-    } finally {
-      setLoadingAi(false);
-    }
-
-    const { data, error } = await supabase.from('notes').insert([
-      {
-        client_id: selectedClient.id,
-        text: newNote,
-        ai_summary,
-        ai_tags,
-        ai_sentiment
-      }
-    ]).select();
-
-    if (error) {
-      console.error('insert note error:', error);
-      alert('Ошибка сохранения заметки: ' + error.message);
-      return;
-    }
-
-    if (data) {
+    const { data, error } = await supabase.from('notes').insert([notePayload]).select();
+    if (!error && data) {
       setNotes([data[0], ...notes]);
       setNewNote('');
     }
@@ -153,6 +113,7 @@ export default function App() {
               <th className="p-3">Имя</th>
               <th className="p-3">Компания</th>
               <th className="p-3">Статус</th>
+              <th className="p-3 text-right">Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -165,6 +126,14 @@ export default function App() {
                 <td className="p-3 font-medium">{c.name}</td>
                 <td className="p-3">{c.company}</td>
                 <td className="p-3"><span className="px-2 py-1 bg-gray-200 text-xs rounded">{c.status}</span></td>
+                <td className="p-3 text-right">
+                  <button 
+                    onClick={(e) => handleDeleteClient(c.id, e)}
+                    className="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600 transition"
+                  >
+                    Удалить
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -185,8 +154,8 @@ export default function App() {
                 value={newNote} 
                 onChange={e => setNewNote(e.target.value)} 
               />
-              <button disabled={loadingAi} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
-                {loadingAi ? 'AI анализирует...' : 'Добавить заметку'}
+              <button className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+                Добавить заметку
               </button>
             </form>
 
@@ -194,18 +163,6 @@ export default function App() {
               {notes.map(n => (
                 <div key={n.id} className="bg-white p-4 rounded shadow border border-gray-100">
                   <p className="mb-2 font-medium">{n.text}</p>
-                  
-                  {n.ai_summary && (
-                    <div className="bg-purple-50 p-3 rounded border border-purple-100 text-sm">
-                      <p className="text-purple-900 font-semibold mb-1">AI Summary: {n.ai_summary}</p>
-                      <div className="flex gap-2 my-2">
-                        {n.ai_tags?.map((tag, i) => (
-                          <span key={i} className="bg-purple-200 text-purple-800 text-xs px-2 py-0.5 rounded">#{tag}</span>
-                        ))}
-                      </div>
-                      <p className="text-xs text-purple-700">Sentiment: <b>{n.ai_sentiment}</b></p>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
